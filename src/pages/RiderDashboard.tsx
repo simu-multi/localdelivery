@@ -3,14 +3,14 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import type { Delivery, Wallet, WalletTransaction, Rider, Shop, RiderDocument, DocType } from '../lib/supabase';
 import {
-  PHeading, PText, PButton, PInputText,
+  PHeading, PText, PButton, PInputText, PModal,
   PSpinner, PInlineNotification, PSwitch,
 } from '@porsche-design-system/components-react';
 import TopBar from '../components/TopBar';
 import BottomNav from '../components/BottomNav';
 import { StatCard } from '../components/Cards';
-import MapView from '../components/MapView';
-import type { LatLng } from '../lib/maps';
+import MapView, { type MapMarker } from '../components/MapView';
+import { geocodeAddress, type LatLng } from '../lib/maps';
 
 const NAV_ITEMS = [
   { icon: 'home', label: 'Dashboard', tab: 'dashboard' },
@@ -45,6 +45,9 @@ export default function RiderDashboard() {
   const [otpError, setOtpError] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
   const [actionError, setActionError] = useState('');
+  const [rejectModalOpen, setRejectModalOpen] = useState(false);
+  const [resolvedCoords, setResolvedCoords] = useState<{ pickup?: LatLng; delivery?: LatLng }>({});
+  const [mapFocusTarget, setMapFocusTarget] = useState<LatLng | null>(null);
   const [documents, setDocuments] = useState<RiderDocument[]>([]);
   const [docUploading, setDocUploading] = useState(false);
   const [docError, setDocError] = useState('');
@@ -86,6 +89,52 @@ export default function RiderDashboard() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
+  // Automatically geocode missing pickup or delivery coordinates for active delivery
+  useEffect(() => {
+    if (!activeDelivery) {
+      setResolvedCoords({});
+      setMapFocusTarget(null);
+      return;
+    }
+    let active = true;
+
+    async function resolveCoords() {
+      if (!activeDelivery) return;
+      const shopData: any = activeDelivery.shops;
+      const shopObj: Shop | null = Array.isArray(shopData) ? shopData[0] ?? null : shopData ?? null;
+
+      let pLat = shopObj?.lat;
+      let pLng = shopObj?.lng;
+      if ((!pLat || !pLng) && activeDelivery.pickup_address) {
+        const geo = await geocodeAddress(activeDelivery.pickup_address);
+        if (geo && active) {
+          pLat = geo.lat;
+          pLng = geo.lng;
+        }
+      }
+
+      let dLat = activeDelivery.delivery_lat;
+      let dLng = activeDelivery.delivery_lng;
+      if ((!dLat || !dLng) && activeDelivery.delivery_address) {
+        const geo = await geocodeAddress(activeDelivery.delivery_address);
+        if (geo && active) {
+          dLat = geo.lat;
+          dLng = geo.lng;
+        }
+      }
+
+      if (active) {
+        setResolvedCoords({
+          pickup: pLat && pLng ? { lat: pLat, lng: pLng } : undefined,
+          delivery: dLat && dLng ? { lat: dLat, lng: dLng } : undefined,
+        });
+      }
+    }
+
+    resolveCoords();
+    return () => { active = false; };
+  }, [activeDelivery?.id, activeDelivery?.pickup_address, activeDelivery?.delivery_address]);
+
   async function toggleOnline() {
     if (!rider || !user) return;
     const newStatus = !rider.is_online;
@@ -124,6 +173,27 @@ export default function RiderDashboard() {
     if (error) {
       setActionError(error.message);
     } else {
+      await loadData();
+    }
+    setActionLoading(false);
+  }
+
+  async function rejectActiveDelivery(delivery: Delivery) {
+    if (!user) return;
+    setActionError('');
+    setActionLoading(true);
+    const { error } = await supabase.from('deliveries').update({
+      rider_id: null,
+      status: 'pending',
+      assigned_at: null,
+      rejected_by_riders: [...(delivery.rejected_by_riders ?? []), user.id],
+    }).eq('id', delivery.id).eq('rider_id', user.id);
+
+    if (error) {
+      setActionError(error.message);
+    } else {
+      setRejectModalOpen(false);
+      setActiveDelivery(null);
       await loadData();
     }
     setActionLoading(false);
@@ -256,16 +326,39 @@ export default function RiderDashboard() {
     .reduce((sum, t) => sum + Number(t.amount), 0);
 
   // Build map markers for active delivery
-  const pickupCoords: LatLng | null = activeDelivery?.shops?.[0]?.lat && activeDelivery?.shops?.[0]?.lng
-    ? { lat: activeDelivery.shops[0].lat, lng: activeDelivery.shops[0].lng }
-    : null;
-  const deliveryCoords: LatLng | null = activeDelivery?.delivery_lat && activeDelivery?.delivery_lng
-    ? { lat: activeDelivery.delivery_lat, lng: activeDelivery.delivery_lng }
-    : null;
-  const mapMarkers: Array<{ position: LatLng; label?: string; color?: string }> = [];
-  if (pickupCoords) mapMarkers.push({ position: pickupCoords, label: 'P', color: '#006FFF' });
-  if (deliveryCoords) mapMarkers.push({ position: deliveryCoords, label: 'D', color: '#FF3B30' });
-  const mapCenter: LatLng = deliveryCoords ?? pickupCoords ?? { lat: 0, lng: 0 };
+  const shopData: any = activeDelivery?.shops;
+  const shopObj: Shop | null = Array.isArray(shopData) ? shopData[0] ?? null : shopData ?? null;
+
+  const pickupCoords: LatLng | null =
+    (shopObj?.lat && shopObj?.lng ? { lat: shopObj.lat, lng: shopObj.lng } : null) ??
+    resolvedCoords.pickup ??
+    null;
+
+  const deliveryCoords: LatLng | null =
+    (activeDelivery?.delivery_lat && activeDelivery?.delivery_lng
+      ? { lat: activeDelivery.delivery_lat, lng: activeDelivery.delivery_lng }
+      : null) ??
+    resolvedCoords.delivery ??
+    null;
+
+  const mapMarkers: MapMarker[] = [];
+  if (pickupCoords) {
+    mapMarkers.push({
+      position: pickupCoords,
+      label: 'P',
+      color: '#006FFF',
+      title: `Pickup: ${activeDelivery?.pickup_address || 'Shop'}`,
+    });
+  }
+  if (deliveryCoords) {
+    mapMarkers.push({
+      position: deliveryCoords,
+      label: 'D',
+      color: '#FF3B30',
+      title: `Drop-off: ${activeDelivery?.delivery_address || 'Customer'}`,
+    });
+  }
+  const mapCenter: LatLng | undefined = deliveryCoords ?? pickupCoords ?? undefined;
 
   if (loading) {
     return (
@@ -327,10 +420,20 @@ export default function RiderDashboard() {
                   <PText size="small">📦 {activeDelivery.parcel_description}</PText>
                 </div>
 
-                {/* Map showing pickup and delivery */}
-                {mapMarkers.length > 0 && (
-                  <MapView center={mapCenter} markers={mapMarkers} height="220px" />
-                )}
+                {/* In-built Leaflet Map showing pickup, drop-off and route */}
+                <div className="relative">
+                  <MapView
+                    center={mapCenter}
+                    markers={mapMarkers}
+                    focusTarget={mapFocusTarget}
+                    height="260px"
+                  />
+                  {mapMarkers.length === 0 && (
+                    <div className="absolute inset-0 bg-surface/70 backdrop-blur-xs flex items-center justify-center rounded-[16px]">
+                      <PText size="x-small" className="text-contrast-medium">Resolving location coordinates…</PText>
+                    </div>
+                  )}
+                </div>
 
                 {/* Pickup location card */}
                 <div className="rounded-[12px] p-3" style={{ background: '#EFF6FF', border: '1px solid #BFDBFE' }}>
@@ -339,14 +442,29 @@ export default function RiderDashboard() {
                     <PText size="small" weight="semi-bold">Pickup</PText>
                   </div>
                   <PText size="small" className="text-contrast-medium">{activeDelivery.pickup_address}</PText>
-                  <a
-                    href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(activeDelivery.pickup_address)}`}
-                    target="_blank" rel="noopener noreferrer"
+                  <PButton
+                    variant="secondary"
+                    icon="map"
+                    className="mt-2"
+                    style={{ width: '100%' }}
+                    onClick={() => {
+                      if (pickupCoords) {
+                        setMapFocusTarget({ ...pickupCoords });
+                      }
+                    }}
                   >
-                    <PButton variant="secondary" icon="map" className="mt-2" style={{ width: '100%' }}>
-                      Navigate to Pickup
-                    </PButton>
-                  </a>
+                    Focus Pickup on Map
+                  </PButton>
+                  {pickupCoords && (
+                    <a
+                      href={`https://www.openstreetmap.org/directions?engine=fossgis_osrm_car&route=${pickupCoords.lat}%2C${pickupCoords.lng}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[11px] text-[#006FFF] hover:underline block text-center mt-1.5"
+                    >
+                      Open in OpenStreetMap ↗
+                    </a>
+                  )}
                 </div>
 
                 {/* Delivery location card */}
@@ -356,14 +474,29 @@ export default function RiderDashboard() {
                     <PText size="small" weight="semi-bold">Drop-off</PText>
                   </div>
                   <PText size="small" className="text-contrast-medium">{activeDelivery.delivery_address}</PText>
-                  <a
-                    href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(activeDelivery.delivery_address)}`}
-                    target="_blank" rel="noopener noreferrer"
+                  <PButton
+                    variant="tertiary"
+                    icon="map"
+                    className="mt-2"
+                    style={{ width: '100%' }}
+                    onClick={() => {
+                      if (deliveryCoords) {
+                        setMapFocusTarget({ ...deliveryCoords });
+                      }
+                    }}
                   >
-                    <PButton variant="tertiary" icon="map" className="mt-2" style={{ width: '100%' }}>
-                      Navigate to Delivery
-                    </PButton>
-                  </a>
+                    Focus Drop-off on Map
+                  </PButton>
+                  {deliveryCoords && (
+                    <a
+                      href={`https://www.openstreetmap.org/directions?engine=fossgis_osrm_car&route=${deliveryCoords.lat}%2C${deliveryCoords.lng}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[11px] text-[#006FFF] hover:underline block text-center mt-1.5"
+                    >
+                      Open in OpenStreetMap ↗
+                    </a>
+                  )}
                 </div>
 
                 {/* Step indicator */}
@@ -375,9 +508,19 @@ export default function RiderDashboard() {
 
                 {/* Action buttons based on status */}
                 {activeDelivery.status === 'assigned' && (
-                  <PButton onClick={() => updateDeliveryStatus(activeDelivery, 'picked_up')} loading={actionLoading} style={{ width: '100%' }}>
-                    Mark Picked Up
-                  </PButton>
+                  <div className="space-y-2">
+                    <PButton onClick={() => updateDeliveryStatus(activeDelivery, 'picked_up')} loading={actionLoading} style={{ width: '100%' }}>
+                      Mark Picked Up
+                    </PButton>
+                    <button
+                      type="button"
+                      onClick={() => setRejectModalOpen(true)}
+                      disabled={actionLoading}
+                      className="w-full py-2.5 px-4 rounded-lg border border-[#FF3B30] text-[#FF3B30] hover:bg-[#FEF2F2] font-semibold text-sm transition-colors cursor-pointer"
+                    >
+                      Reject Delivery
+                    </button>
+                  </div>
                 )}
                 {activeDelivery.status === 'picked_up' && (
                   <PButton onClick={() => updateDeliveryStatus(activeDelivery, 'arriving')} loading={actionLoading} style={{ width: '100%' }}>
@@ -559,6 +702,35 @@ export default function RiderDashboard() {
           </div>
         </div>
       )}
+
+      {/* Reject Active Delivery Confirmation Modal */}
+      <PModal open={rejectModalOpen} onDismiss={() => setRejectModalOpen(false)}>
+        <PHeading slot="header" size="medium">Reject Delivery</PHeading>
+        <div className="space-y-3">
+          <PText>
+            Are you sure you want to reject the delivery for <strong>{activeDelivery?.customer_name}</strong>?
+          </PText>
+          <PText size="small" className="text-contrast-medium">
+            This delivery will be released back to the general pool for other riders to accept, and will no longer appear on your dashboard.
+          </PText>
+          {actionError && (
+            <PInlineNotification state="error" heading="Error" description={actionError} dismissButton onDismiss={() => setActionError('')} />
+          )}
+        </div>
+        <div slot="footer" className="flex gap-3">
+          <button
+            type="button"
+            onClick={() => activeDelivery && rejectActiveDelivery(activeDelivery)}
+            disabled={actionLoading}
+            className="px-4 py-2 rounded-lg bg-[#FF3B30] hover:bg-[#D32F2F] text-white font-semibold text-sm transition-colors cursor-pointer"
+          >
+            {actionLoading ? 'Rejecting...' : 'Yes, Reject Delivery'}
+          </button>
+          <PButton variant="secondary" onClick={() => setRejectModalOpen(false)} disabled={actionLoading}>
+            Keep Delivery
+          </PButton>
+        </div>
+      </PModal>
 
       <BottomNav activeTab={activeTab} onTabChange={setActiveTab} items={NAV_ITEMS} />
     </div>

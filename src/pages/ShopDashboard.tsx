@@ -271,12 +271,18 @@ export default function ShopDashboard() {
                 setDeliveryAddress(place.address);
               }}
             />
-            {deliveryLocation && shop?.lat && shop?.lng && (
+            {deliveryLocation && (
               <MapView
-                center={{ lat: shop.lat, lng: shop.lng }}
+                center={
+                  shop?.lat && shop?.lng
+                    ? { lat: shop.lat, lng: shop.lng }
+                    : { lat: deliveryLocation.lat, lng: deliveryLocation.lng }
+                }
                 markers={[
-                  { position: { lat: shop.lat, lng: shop.lng }, label: 'P', color: '#006FFF' },
-                  { position: { lat: deliveryLocation.lat, lng: deliveryLocation.lng }, label: 'D', color: '#FF3B30' },
+                  ...(shop?.lat && shop?.lng
+                    ? [{ position: { lat: shop.lat, lng: shop.lng }, label: 'P', color: '#006FFF', title: `Shop: ${shop.name || 'Pickup'}` }]
+                    : []),
+                  { position: { lat: deliveryLocation.lat, lng: deliveryLocation.lng }, label: 'D', color: '#FF3B30', title: `Drop-off: ${deliveryAddress}` },
                 ]}
                 height="240px"
               />

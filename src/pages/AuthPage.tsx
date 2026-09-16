@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
 import type { Role } from '../lib/supabase';
@@ -43,6 +43,18 @@ export default function AuthPage() {
   // countdown for resend
   const [resendCountdown, setResendCountdown] = useState(0);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Parse OAuth error returning in URL query or hash
+  useEffect(() => {
+    const hash = window.location.hash;
+    const search = window.location.search;
+    const params = new URLSearchParams(hash.startsWith('#') ? hash.substring(1) : search);
+    const errDesc = params.get('error_description') || params.get('error');
+    if (errDesc) {
+      setError(decodeURIComponent(errDesc.replace(/\+/g, ' ')));
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+  }, []);
 
   function startResendCountdown() {
     setResendCountdown(60);
@@ -93,10 +105,22 @@ export default function AuthPage() {
     setLoading(true);
     const { error: err } = await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo: window.location.origin },
+      options: {
+        redirectTo: window.location.origin,
+        queryParams: {
+          access_type: 'offline',
+          prompt: 'consent',
+        },
+      },
     });
     if (err) {
-      setError(err.message);
+      if (err.message.includes('not enabled') || err.message.includes('validation_failed')) {
+        setError(
+          'Google Sign-In is not enabled on your Supabase project yet. To enable it: go to your Supabase Dashboard > Authentication > Providers > Google, toggle it ON, and enter your Google OAuth Client ID & Secret.'
+        );
+      } else {
+        setError(err.message);
+      }
       setLoading(false);
     }
   }
@@ -349,7 +373,29 @@ export default function AuthPage() {
 
         {/* ── REGISTER ──────────────────────── */}
         {step === 'register' && (
-          <form onSubmit={handleRegister} className="flex flex-col gap-4">
+          <>
+            <button
+              type="button"
+              onClick={handleGoogleSignIn}
+              disabled={loading}
+              className="w-full h-12 rounded-md border border-[#8b8f94] bg-white text-[#1d1d1f] font-semibold flex items-center justify-center gap-3 transition hover:bg-[#f5f6f7] disabled:opacity-60 cursor-pointer"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+                <path fill="#4285F4" d="M21.35 12.27c0-.72-.06-1.26-.2-1.82H12v3.45h5.36a4.58 4.58 0 0 1-1.99 3.01v2.51h3.22c1.89-1.74 2.76-4.3 2.76-7.15Z"/>
+                <path fill="#34A853" d="M12 21.6c2.7 0 4.96-.89 6.61-2.42l-3.22-2.51c-.89.6-2.03.96-3.39.96-2.61 0-4.82-1.76-5.61-4.13H3.06v2.59A9.99 9.99 0 0 0 12 21.6Z"/>
+                <path fill="#FBBC05" d="M6.39 13.5a6.02 6.02 0 0 1 0-3.01V7.9H3.06a10 10 0 0 0 0 8.19l3.33-2.59Z"/>
+                <path fill="#EA4335" d="M12 6.36c1.47 0 2.78.5 3.82 1.49l2.86-2.86C16.96 3.4 14.7 2.4 12 2.4a9.99 9.99 0 0 0-8.94 5.5l3.33 2.59C7.18 8.12 9.39 6.36 12 6.36Z"/>
+              </svg>
+              Sign up with Google
+            </button>
+
+            <div className="flex items-center gap-3 my-5">
+              <div className="h-px flex-1 bg-[#d5d8dc]" />
+              <PText size="small" className="text-contrast-medium">or use email</PText>
+              <div className="h-px flex-1 bg-[#d5d8dc]" />
+            </div>
+
+            <form onSubmit={handleRegister} className="flex flex-col gap-4">
             <PInputText
               name="full_name"
               label="Full Name"
@@ -388,7 +434,8 @@ export default function AuthPage() {
               </PText>
             </div>
           </form>
-        )}
+        </>
+      )}
 
         {/* ── FORGOT — enter email ───────────── */}
         {step === 'forgot' && (
