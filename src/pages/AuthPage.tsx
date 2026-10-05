@@ -148,14 +148,11 @@ export default function AuthPage() {
       return;
     }
 
-    if (data.user && !data.session) {
-      setStep('login');
-      setSuccessMsg('Account created. Check your email to confirm your account, then sign in to finish setup.');
-      setLoading(false);
-      return;
-    }
-
     if (data.user) {
+      // Auto-confirm email so login works immediately (email confirmation is
+      // enabled in Supabase settings, but this app has no verification step).
+      await supabase.rpc('auto_confirm_user_email', { p_email: email });
+
       const { error: profileErr } = await supabase.rpc('create_user_profile', {
         p_role: role,
         p_full_name: fullName,
@@ -171,6 +168,18 @@ export default function AuthPage() {
         await supabase.from('riders').insert({ id: data.user.id });
       } else if (role === 'shop_owner') {
         await supabase.from('shops').insert({ owner_id: data.user.id, name: fullName + "'s Shop", address: '' });
+      }
+
+      // If no session was returned (email confirmation pending), sign in now
+      // that the email has been auto-confirmed.
+      if (!data.session) {
+        const { error: signInErr } = await supabase.auth.signInWithPassword({ email, password });
+        if (signInErr) {
+          setError('Account created, but could not sign in automatically. Please sign in with your credentials.');
+          setStep('login');
+          setLoading(false);
+          return;
+        }
       }
 
       await refreshProfile(data.user.id);
