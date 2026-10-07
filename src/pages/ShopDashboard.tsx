@@ -45,6 +45,7 @@ export default function ShopDashboard() {
   const [bookingLoading, setBookingLoading] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [distanceLoading, setDistanceLoading] = useState(false);
+  const [rechargeLoading, setRechargeLoading] = useState(false);
 
   // Structured pickup + delivery addresses with pin coordinates
   const [pickupAddr, setPickupAddr] = useState<StructuredAddress>(emptyAddress);
@@ -204,6 +205,22 @@ export default function ShopDashboard() {
     setActiveTab('dashboard');
   }
 
+
+  async function handleTestRecharge() {
+    if (!wallet) return;
+    setRechargeLoading(true);
+    const { error } = await supabase.rpc('credit_wallet', {
+      p_wallet_id: wallet.id,
+      p_amount: 1000,
+      p_description: 'Test wallet recharge',
+    });
+    setRechargeLoading(false);
+    if (error) {
+      setBookingError('Could not add test money. Please try again.');
+      return;
+    }
+    await loadData();
+  }
 
   const active = deliveries.filter(d => ['pending','assigned','picked_up','arriving'].includes(d.status));
   const completed = deliveries.filter(d => d.status === 'completed');
@@ -388,10 +405,14 @@ export default function ShopDashboard() {
             <span className="text-3xl font-bold">₹{(wallet?.balance ?? 0).toFixed(2)}</span>
           </div>
 
+          <div className="flex gap-3">
+            <PButton loading={rechargeLoading} onClick={handleTestRecharge}>Add ₹1,000 test money</PButton>
+          </div>
+
           <PInlineNotification
             state="info"
-            heading="Wallet recharge unavailable"
-            description="Recharge will be available once a secure payment gateway is connected."
+            heading="Test mode"
+            description="This adds test funds to your wallet for trying out deliveries. A real payment gateway will replace this later."
             dismissButton={false}
           />
 
