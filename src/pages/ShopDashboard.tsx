@@ -9,9 +9,13 @@ import {
 import TopBar from '../components/TopBar';
 import BottomNav from '../components/BottomNav';
 import { StatCard, DeliveryCard, StatusBadge } from '../components/Cards';
-import AddressSearch from '../components/AddressSearch';
+import AddressForm from '../components/AddressForm';
+import MapPinPicker from '../components/MapPinPicker';
 import MapView from '../components/MapView';
-import { roadDistanceKm, type PlaceResult } from '../lib/maps';
+import {
+  roadDistanceKm, formatAddress, emptyAddress,
+  type LatLng, type StructuredAddress,
+} from '../lib/maps';
 
 const NAV_ITEMS = [
   { icon: 'home', label: 'Dashboard', tab: 'dashboard' },
@@ -33,7 +37,6 @@ export default function ShopDashboard() {
   // Book delivery form
   const [customerName, setCustomerName] = useState('');
   const [customerMobile, setCustomerMobile] = useState('');
-  const [deliveryAddress, setDeliveryAddress] = useState('');
   const [parcelDesc, setParcelDesc] = useState('');
   const [notes, setNotes] = useState('');
   const [distanceKm, setDistanceKm] = useState('');
@@ -41,27 +44,49 @@ export default function ShopDashboard() {
   const [bookingSuccess, setBookingSuccess] = useState('');
   const [bookingLoading, setBookingLoading] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [deliveryLocation, setDeliveryLocation] = useState<PlaceResult | null>(null);
   const [distanceLoading, setDistanceLoading] = useState(false);
+
+  // Structured pickup + delivery addresses with pin coordinates
+  const [pickupAddr, setPickupAddr] = useState<StructuredAddress>(emptyAddress);
+  const [pickupCoords, setPickupCoords] = useState<LatLng | null>(null);
+  const [deliveryAddr, setDeliveryAddr] = useState<StructuredAddress>(emptyAddress);
+  const [deliveryCoords, setDeliveryCoords] = useState<LatLng | null>(null);
+
+  // Map pin picker modal
+  const [pickerOpen, setPickerOpen] = useState<null | 'pickup' | 'delivery'>(null);
 
   const charge = calcDeliveryCharge(parseFloat(distanceKm) || 0);
 
-  // Auto-calculate distance when delivery location is selected and shop has coordinates
+  // Pre-fill pickup from shop profile when shop loads
   useEffect(() => {
-    if (!deliveryLocation || !shop?.lat || !shop?.lng) return;
+    if (shop?.address && !pickupAddr.road && !pickupAddr.area && !pickupAddr.city) {
+      const prefilled: StructuredAddress = {
+        ...emptyAddress,
+        building: shop.name || '',
+        area: shop.address,
+        city: '',
+      };
+      setPickupAddr(prefilled);
+    }
+    if (shop?.lat && shop?.lng && !pickupCoords) {
+      setPickupCoords({ lat: shop.lat, lng: shop.lng });
+    }
+  }, [shop, pickupAddr, pickupCoords]);
+
+  // Auto-calculate distance when both coordinates are available
+  useEffect(() => {
+    if (!pickupCoords || !deliveryCoords) return;
     let active = true;
     setDistanceLoading(true);
-    roadDistanceKm({ lat: shop.lat, lng: shop.lng }, { lat: deliveryLocation.lat, lng: deliveryLocation.lng })
+    roadDistanceKm(pickupCoords, deliveryCoords)
       .then((km) => {
         if (!active) return;
-        if (km !== null) {
-          setDistanceKm(km.toFixed(2));
-        }
+        if (km !== null) setDistanceKm(km.toFixed(2));
         setDistanceLoading(false);
       })
       .catch(() => { if (active) setDistanceLoading(false); });
     return () => { active = false; };
-  }, [deliveryLocation, shop?.lat, shop?.lng]);
+  }, [pickupCoords, deliveryCoords]);
 
   const loadData = useCallback(async () => {
     if (!user) return;
@@ -106,6 +131,8 @@ export default function ShopDashboard() {
     const km = parseFloat(distanceKm);
     if (!km || km <= 0) { setBookingError('Enter a valid distance in KM'); return; }
     if (!shop) { setBookingError('Shop profile not set up'); return; }
+    if (!pickupCoords) { setBookingError('Please set the pickup location on the map'); return; }
+    if (!deliveryCoords) { setBookingError('Please set the delivery location on the map'); return; }
     setConfirmOpen(true);
   }
 
@@ -125,15 +152,19 @@ export default function ShopDashboard() {
       shop_id: shop.id,
       customer_name: customerName,
       customer_mobile: customerMobile,
-      pickup_address: shop.address,
-      delivery_address: deliveryAddress,
+      pickup_address: formatAddress(pickupAddr),
+      delivery_address: formatAddress(deliveryAddr),
+      pickup_address_structured: pickupAddr,
+      delivery_address_structured: deliveryAddr,
+      pickup_lat: pickupCoords?.lat ?? null,
+      pickup_lng: pickupCoords?.lng ?? null,
+      delivery_lat: deliveryCoords?.lat ?? null,
+      delivery_lng: deliveryCoords?.lng ?? null,
       parcel_description: parcelDesc,
       notes: notes || null,
       distance_km: km,
       charge: fee,
       status: 'pending',
-      delivery_lat: deliveryLocation?.lat ?? null,
-      delivery_lng: deliveryLocation?.lng ?? null,
     }).select();
 
     if (deliveryErr) {
@@ -164,9 +195,10 @@ export default function ShopDashboard() {
 
     setConfirmOpen(false);
     setBookingSuccess(`Delivery booked successfully! Charge: ₹${fee}`);
-    setCustomerName(''); setCustomerMobile(''); setDeliveryAddress('');
+    setCustomerName(''); setCustomerMobile('');
     setParcelDesc(''); setNotes(''); setDistanceKm('');
-    setDeliveryLocation(null);
+    setPickupAddr(emptyAddress); setDeliveryAddr(emptyAddress);
+    setPickupCoords(null); setDeliveryCoords(null);
     setBookingLoading(false);
     await loadData();
     setActiveTab('dashboard');
@@ -251,50 +283,42 @@ export default function ShopDashboard() {
           )}
 
           <form onSubmit={handleBookDelivery} className="space-y-fluid-sm">
-            <div className="bg-surface rounded-[12px] p-3" style={{ border: '1px solid #E5E7EB' }}>
-              <PText size="x-small" className="text-contrast-medium mb-1">Pickup Address (from shop)</PText>
-              <PText size="small">{shop?.address || 'No address set in shop profile'}</PText>
-            </div>
-
             <PInputText name="customer_name" label="Customer Name" value={customerName}
               onInput={(e) => setCustomerName((e.target as HTMLInputElement).value)} required />
             <PInputText name="customer_mobile" label="Customer Mobile" value={customerMobile}
               onInput={(e) => setCustomerMobile((e.target as HTMLInputElement).value)} required />
-            <AddressSearch
-              label="Delivery Address"
-              value={deliveryAddress}
-              placeholder="Search for the delivery location"
-              required
-              onInput={setDeliveryAddress}
-              onPlaceSelected={(place) => {
-                setDeliveryLocation(place);
-                setDeliveryAddress(place.address);
-              }}
+
+            <AddressForm
+              label="Pickup Address"
+              address={pickupAddr}
+              onChange={setPickupAddr}
+              onOpenMap={() => setPickerOpen('pickup')}
+              hasPin={!!pickupCoords}
             />
-            {deliveryLocation && (
+            <AddressForm
+              label="Delivery Address"
+              address={deliveryAddr}
+              onChange={setDeliveryAddr}
+              onOpenMap={() => setPickerOpen('delivery')}
+              hasPin={!!deliveryCoords}
+            />
+
+            {pickupCoords && deliveryCoords && (
               <MapView
-                center={
-                  shop?.lat && shop?.lng
-                    ? { lat: shop.lat, lng: shop.lng }
-                    : { lat: deliveryLocation.lat, lng: deliveryLocation.lng }
-                }
+                center={pickupCoords}
                 markers={[
-                  ...(shop?.lat && shop?.lng
-                    ? [{ position: { lat: shop.lat, lng: shop.lng }, label: 'P', color: '#006FFF', title: `Shop: ${shop.name || 'Pickup'}` }]
-                    : []),
-                  { position: { lat: deliveryLocation.lat, lng: deliveryLocation.lng }, label: 'D', color: '#FF3B30', title: `Drop-off: ${deliveryAddress}` },
+                  { position: pickupCoords, label: 'P', color: '#006FFF', title: 'Pickup' },
+                  { position: deliveryCoords, label: 'D', color: '#FF3B30', title: 'Delivery' },
                 ]}
                 height="240px"
               />
             )}
+
             <div>
               <PInputText name="distance_km" label="Distance (KM)" value={distanceKm}
                 onInput={(e) => setDistanceKm((e.target as HTMLInputElement).value)} required />
               {distanceLoading && (
                 <PText size="x-small" className="text-contrast-medium mt-1">Calculating distance…</PText>
-              )}
-              {!shop?.lat && (
-                <PText size="x-small" className="text-contrast-medium mt-1">Set your shop location in profile to auto-calculate distance.</PText>
               )}
             </div>
             <PInputText name="parcel_desc" label="Parcel Description" value={parcelDesc}
@@ -303,9 +327,9 @@ export default function ShopDashboard() {
               onInput={(e) => setNotes((e.target as HTMLInputElement).value)} />
 
             {distanceKm && parseFloat(distanceKm) > 0 && (
-              <div className="bg-[#EFF6FF] rounded-[12px] p-3 flex items-center justify-between">
+              <div className="bg-info-soft rounded-[12px] p-3 flex items-center justify-between">
                 <PText size="small">Delivery Charge</PText>
-                <PText size="large" weight="semi-bold" className="text-[#006FFF]">₹{charge}</PText>
+                <PText size="large" weight="semi-bold" className="text-info">₹{charge}</PText>
               </div>
             )}
 
@@ -316,9 +340,10 @@ export default function ShopDashboard() {
             <PHeading slot="header" size="medium">Confirm Booking</PHeading>
             <div className="space-y-2">
               <PText>Delivery to: <strong>{customerName}</strong></PText>
-              <PText>Address: {deliveryAddress}</PText>
+              <PText size="small" className="text-contrast-medium">Pickup: {formatAddress(pickupAddr)}</PText>
+              <PText size="small" className="text-contrast-medium">Delivery: {formatAddress(deliveryAddr)}</PText>
               <PText>Distance: {distanceKm} km</PText>
-              <PText>Charge: <strong style={{ color: '#006FFF' }}>₹{charge}</strong></PText>
+              <PText>Charge: <strong className="text-info">₹{charge}</strong></PText>
               <PText size="small" className="text-contrast-medium">This amount will be deducted from your wallet.</PText>
             </div>
             <div slot="footer" className="flex gap-3">
@@ -326,6 +351,31 @@ export default function ShopDashboard() {
               <PButton variant="secondary" onClick={() => setConfirmOpen(false)}>Cancel</PButton>
             </div>
           </PModal>
+
+          <MapPinPicker
+            open={pickerOpen === 'pickup'}
+            onDismiss={() => setPickerOpen(null)}
+            label="Set Pickup Location"
+            initialCoords={pickupCoords}
+            protectedFields={{ house_flat: true, landmark: true }}
+            onConfirm={(coords, partial) => {
+              setPickupCoords(coords);
+              setPickupAddr(prev => ({ ...prev, ...partial }));
+              setPickerOpen(null);
+            }}
+          />
+          <MapPinPicker
+            open={pickerOpen === 'delivery'}
+            onDismiss={() => setPickerOpen(null)}
+            label="Set Delivery Location"
+            initialCoords={deliveryCoords}
+            protectedFields={{ house_flat: true, landmark: true }}
+            onConfirm={(coords, partial) => {
+              setDeliveryCoords(coords);
+              setDeliveryAddr(prev => ({ ...prev, ...partial }));
+              setPickerOpen(null);
+            }}
+          />
         </div>
       )}
 
@@ -388,17 +438,32 @@ export default function ShopDashboard() {
             <StatusBadge status={selectedDelivery.status} />
             <PText><strong>Customer:</strong> {selectedDelivery.customer_name}</PText>
             <PText><strong>Mobile:</strong> {selectedDelivery.customer_mobile}</PText>
-            <PText><strong>Pickup:</strong> {selectedDelivery.pickup_address}</PText>
-            <PText><strong>Drop:</strong> {selectedDelivery.delivery_address}</PText>
+            <div className="bg-surface rounded-[12px] p-3 space-y-1" style={{ border: '1px solid var(--pds-color-contrast-low-light, #D8D8DB)' }}>
+              <PText size="x-small" weight="semi-bold">Pickup Address</PText>
+              <PText size="small">{selectedDelivery.pickup_address}</PText>
+              {selectedDelivery.pickup_lat && selectedDelivery.pickup_lng && (
+                <PText size="x-small" className="text-contrast-medium">GPS: {Number(selectedDelivery.pickup_lat).toFixed(5)}, {Number(selectedDelivery.pickup_lng).toFixed(5)}</PText>
+              )}
+            </div>
+            <div className="bg-surface rounded-[12px] p-3 space-y-1" style={{ border: '1px solid var(--pds-color-contrast-low-light, #D8D8DB)' }}>
+              <PText size="x-small" weight="semi-bold">Delivery Address</PText>
+              <PText size="small">{selectedDelivery.delivery_address}</PText>
+              {selectedDelivery.delivery_lat && selectedDelivery.delivery_lng && (
+                <PText size="x-small" className="text-contrast-medium">GPS: {Number(selectedDelivery.delivery_lat).toFixed(5)}, {Number(selectedDelivery.delivery_lng).toFixed(5)}</PText>
+              )}
+            </div>
             <PText><strong>Parcel:</strong> {selectedDelivery.parcel_description}</PText>
             {selectedDelivery.notes && <PText><strong>Notes:</strong> {selectedDelivery.notes}</PText>}
             <PText><strong>Distance:</strong> {selectedDelivery.distance_km} km</PText>
             <PText><strong>Charge:</strong> ₹{selectedDelivery.charge}</PText>
             <PText><strong>Booked:</strong> {new Date(selectedDelivery.created_at).toLocaleString()}</PText>
-            {selectedDelivery.delivery_lat && selectedDelivery.delivery_lng && (
+            {selectedDelivery.pickup_lat && selectedDelivery.pickup_lng && selectedDelivery.delivery_lat && selectedDelivery.delivery_lng && (
               <MapView
-                center={{ lat: selectedDelivery.delivery_lat, lng: selectedDelivery.delivery_lng }}
-                markers={[{ position: { lat: selectedDelivery.delivery_lat, lng: selectedDelivery.delivery_lng }, label: 'D', color: '#FF3B30' }]}
+                center={{ lat: Number(selectedDelivery.pickup_lat), lng: Number(selectedDelivery.pickup_lng) }}
+                markers={[
+                  { position: { lat: Number(selectedDelivery.pickup_lat), lng: Number(selectedDelivery.pickup_lng) }, label: 'P', color: '#006FFF', title: 'Pickup' },
+                  { position: { lat: Number(selectedDelivery.delivery_lat), lng: Number(selectedDelivery.delivery_lng) }, label: 'D', color: '#FF3B30', title: 'Delivery' },
+                ]}
                 height="200px"
               />
             )}

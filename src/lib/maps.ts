@@ -121,6 +121,58 @@ export async function geocodeAddress(address: string): Promise<PlaceResult | nul
   return results[0] ?? null;
 }
 
+export interface StructuredAddress {
+  house_flat: string;
+  building: string;
+  road: string;
+  area: string;
+  landmark: string;
+  city: string;
+  district: string;
+  state: string;
+  pincode: string;
+}
+
+export const emptyAddress: StructuredAddress = {
+  house_flat: '', building: '', road: '', area: '',
+  landmark: '', city: '', district: '', state: '', pincode: '',
+};
+
+export function formatAddress(a: StructuredAddress): string {
+  const parts = [
+    a.house_flat, a.building, a.road, a.area,
+    a.landmark && `Near ${a.landmark}`,
+    a.city, a.district, a.state, a.pincode,
+  ].filter(Boolean);
+  return parts.join(', ');
+}
+
+// Reverse geocode coordinates into structured address using Nominatim
+export async function reverseGeocode(lat: number, lng: number): Promise<Partial<StructuredAddress>> {
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&addressdetails=1`;
+    const res = await fetch(url, {
+      headers: { Accept: 'application/json', 'User-Agent': 'QuickDrop-LocalDelivery/1.0' },
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!res.ok) return {};
+    const data = await res.json();
+    const a = data.address ?? {};
+    return {
+      building: a.building || a.office || a.amenity || '',
+      road: a.road || a.pedestrian || a.footway || a.path || '',
+      area: a.neighbourhood || a.suburb || a.quarter || a.residential || '',
+      landmark: a.landmark || '',
+      city: a.city || a.town || a.village || a.hamlet || '',
+      district: a.county || a.state_district || '',
+      state: a.state || '',
+      pincode: a.postcode || '',
+    };
+  } catch {
+    return {};
+  }
+}
+
 // Calculate road distance using OSRM driving service with Haversine fallback
 export async function roadDistanceKm(origin: LatLng, destination: LatLng): Promise<number | null> {
   if (

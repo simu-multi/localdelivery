@@ -103,8 +103,8 @@ export default function RiderDashboard() {
       const shopData: any = activeDelivery.shops;
       const shopObj: Shop | null = Array.isArray(shopData) ? shopData[0] ?? null : shopData ?? null;
 
-      let pLat = shopObj?.lat;
-      let pLng = shopObj?.lng;
+      let pLat = activeDelivery.pickup_lat ?? shopObj?.lat;
+      let pLng = activeDelivery.pickup_lng ?? shopObj?.lng;
       if ((!pLat || !pLng) && activeDelivery.pickup_address) {
         const geo = await geocodeAddress(activeDelivery.pickup_address);
         if (geo && active) {
@@ -330,6 +330,9 @@ export default function RiderDashboard() {
   const shopObj: Shop | null = Array.isArray(shopData) ? shopData[0] ?? null : shopData ?? null;
 
   const pickupCoords: LatLng | null =
+    (activeDelivery?.pickup_lat && activeDelivery?.pickup_lng
+      ? { lat: activeDelivery.pickup_lat, lng: activeDelivery.pickup_lng }
+      : null) ??
     (shopObj?.lat && shopObj?.lng ? { lat: shopObj.lat, lng: shopObj.lng } : null) ??
     resolvedCoords.pickup ??
     null;

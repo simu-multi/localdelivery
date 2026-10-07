@@ -5,6 +5,8 @@ const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
+import type { StructuredAddress } from './maps';
+
 export type Role = 'shop_owner' | 'rider' | 'admin';
 
 export interface Profile {
@@ -58,12 +60,16 @@ export interface Delivery {
   status: DeliveryStatus;
   otp?: string;
   otp_verified: boolean;
-  delivery_lat?: number;
-  delivery_lng?: number;
   assigned_at?: string;
   picked_up_at?: string;
   completed_at?: string;
   created_at: string;
+  pickup_lat?: number;
+  pickup_lng?: number;
+  pickup_address_structured?: StructuredAddress | null;
+  delivery_address_structured?: StructuredAddress | null;
+  delivery_lat?: number;
+  delivery_lng?: number;
 }
 
 export interface Wallet {
